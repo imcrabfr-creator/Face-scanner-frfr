@@ -1,20 +1,21 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Multi-Face Age Tracker</title>
-    <script defer src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"></script>
+    <title>Fast Multi-Face Age Tracker</title>
+    <script defer src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.3/dist/face-api.js"></script>
     <style>
-        body { margin: 0; background: #111; display: flex; flex-direction: column; align-items: center; color: white; font-family: 'Segoe UI', sans-serif; }
-        #canvas-container { position: relative; margin-top: 20px; }
-        video, canvas { position: absolute; top: 0; left: 0; border-radius: 10px; }
-        .loading { margin-top: 200px; font-size: 20px; color: #00bcff; }
+        body { margin: 0; background: #000; color: white; font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; }
+        #container { position: relative; display: inline-block; }
+        video { border-radius: 12px; background: #111; }
+        canvas { position: absolute; top: 0; left: 0; pointer-events: none; }
+        #status { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7); padding: 5px 12px; border-radius: 20px; font-size: 14px; color: #00bcff; z-index: 10; }
     </style>
 </head>
 <body>
 
-    <div id="loading" class="loading">Initializing AI Models (Age & Face)...</div>
-    
-    <div id="canvas-container">
+    <div id="status">Wait... Loading AI Models...</div>
+
+    <div id="container">
         <video id="video" width="640" height="480" autoplay muted playsinline></video>
         <canvas id="overlay"></canvas>
     </div>
@@ -22,67 +23,68 @@
     <script>
         const video = document.getElementById('video');
         const canvas = document.getElementById('overlay');
-        const loadingLabel = document.getElementById('loading');
+        const status = document.getElementById('status');
+        let ageBuffer = {}; // For smoothing age
 
-        // This helps stop the age from flickering
-        const ageHistory = {}; 
+        async function init() {
+            try {
+                // 1. Load the "Lightweight" models (Tiny version)
+                const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.3/model/';
+                await Promise.all([
+                    faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+                    faceapi.nets.ageGenderNet.loadFromUri(MODEL_URL)
+                ]);
 
-        async function setup() {
-            // 1. Load the models from a public CDN
-            const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
-            
-            await Promise.all([
-                faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
-                faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-                faceapi.nets.ageGenderNet.loadFromUri(MODEL_URL)
-            ]);
-
-            // 2. Start Video
-            navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } })
-                .then(stream => {
-                    video.srcObject = stream;
-                    loadingLabel.style.display = 'none';
-                });
+                status.innerText = "Accessing Camera...";
+                
+                // 2. Start Camera
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640 } });
+                video.srcObject = stream;
+            } catch (err) {
+                status.innerText = "Error: " + err.message;
+                console.error(err);
+            }
         }
 
         video.addEventListener('play', () => {
+            status.innerText = "AI Active";
             const displaySize = { width: video.width, height: video.height };
             faceapi.matchDimensions(canvas, displaySize);
 
+            // The main loop
             setInterval(async () => {
-                // 3. Detect ALL faces + Age
-                const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions())
-                    .withFaceLandmarks()
+                // Detect multiple faces + estimate age
+                const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 160 }))
                     .withAgeAndGender();
 
-                const resizedDetections = faceapi.resizeResults(detections, displaySize);
-                
-                // Clear and draw
+                const resized = faceapi.resizeResults(detections, displaySize);
                 const ctx = canvas.getContext('2d');
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-                resizedDetections.forEach((detection, i) => {
-                    const { age, box } = detection;
-                    
-                    // 4. Smooth the age (Average of last 10 frames)
-                    if (!ageHistory[i]) ageHistory[i] = [];
-                    ageHistory[i].push(age);
-                    if (ageHistory[i].length > 15) ageHistory[i].shift();
-                    const smoothAge = Math.round(ageHistory[i].reduce((a, b) => a + b) / ageHistory[i].length);
+                resized.forEach((det, i) => {
+                    const { age, box } = det;
 
-                    // 5. Custom Drawing (Blue Square + Age)
+                    // Smoothing Age (averaging last 10 frames)
+                    if (!ageBuffer[i]) ageBuffer[i] = [];
+                    ageBuffer[i].push(age);
+                    if (ageBuffer[i].length > 10) ageBuffer[i].shift();
+                    const smoothAge = Math.round(ageBuffer[i].reduce((a, b) => a + b) / ageBuffer[i].length);
+
+                    // Draw Blue Square on Head
                     ctx.strokeStyle = '#00bcff';
                     ctx.lineWidth = 4;
-                    ctx.strokeRect(box.x, box.y - 50, box.width, box.width); // Square on head area
+                    // Position square above eyes
+                    ctx.strokeRect(box.x, box.y - (box.height * 0.2), box.width, box.width);
 
+                    // Draw Age Label
                     ctx.fillStyle = '#00bcff';
-                    ctx.font = 'bold 18px Arial';
-                    ctx.fillText(`Age: ~${smoothAge}`, box.x, box.y - 60);
+                    ctx.font = 'bold 20px sans-serif';
+                    ctx.fillText(`~${smoothAge} years`, box.x + 5, box.y - (box.height * 0.3));
                 });
-            }, 100); // Runs 10 times per second for smoothness
+            }, 60); // Fast interval for smoothness (~16 FPS)
         });
 
-        setup();
+        init();
     </script>
 </body>
 </html>
