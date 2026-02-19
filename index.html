@@ -1,90 +1,82 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Blue Square Tracker</title>
+    <title>AI Face Tracker</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@microsoft/edge-selenium-tools/dist/index.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils"></script>
+    
     <style>
-        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; background: #222; color: white; }
-        video { display: none; } /* Hide the raw video feed */
-        canvas { border: 4px solid #444; border-radius: 8px; max-width: 100%; }
-        .controls { margin: 20px; }
+        body { margin: 0; background: #111; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; }
+        #output_canvas { border-radius: 10px; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
+        .loading-msg { color: white; position: absolute; font-family: sans-serif; }
     </style>
 </head>
 <body>
 
-    <h2>Blue Object Tracker</h2>
-    <p>Hold something blue up to the camera!</p>
+    <div class="loading-msg">Loading AI Model...</div>
+    <video id="input_video" style="display:none"></video>
+    <canvas id="output_canvas"></canvas>
 
-    <video id="video" autoplay playsinline></video>
-    <canvas id="canvas"></canvas>
+    <script type="module">
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const loadingMsg = document.querySelector('.loading-msg');
 
-    <script>
-        const video = document.getElementById('video');
-        const canvas = document.getElementById('canvas');
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        function onResults(results) {
+            loadingMsg.style.display = 'none';
+            
+            // Set canvas size to match video
+            canvasElement.width = videoElement.videoWidth;
+            canvasElement.height = videoElement.videoHeight;
 
-        // 1. Request Camera Access
-        async function startCamera() {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-                video.srcObject = stream;
-                video.onloadedmetadata = () => {
-                    canvas.width = video.videoWidth;
-                    canvas.height = video.videoHeight;
-                    trackBlue();
-                };
-            } catch (err) {
-                console.error("Error accessing camera: ", err);
-                alert("Camera access denied or not available.");
-            }
-        }
+            // Draw the video frame
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
-        function trackBlue() {
-            // Draw current video frame to canvas
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-            // Get image data to analyze pixels
-            const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const length = frame.data.length;
-
-            let totalX = 0, totalY = 0, count = 0;
-
-            // 2. Simple Color Detection Loop
-            for (let i = 0; i < length; i += 4) {
-                const r = frame.data[i];
-                const g = frame.data[i + 1];
-                const b = frame.data[i + 2];
-
-                // Check if the pixel is "mostly blue"
-                // Logic: Blue value is high, and significantly higher than Red/Green
-                if (b > 100 && b > r * 1.5 && b > g * 1.5) {
-                    const x = (i / 4) % canvas.width;
-                    const y = Math.floor((i / 4) / canvas.width);
-
-                    totalX += x;
-                    totalY += y;
-                    count++;
-                }
-            }
-
-            // 3. Draw the Square if blue is found
-            if (count > 50) { // Require a minimum number of blue pixels to avoid "noise"
-                const avgX = totalX / count;
-                const avgY = totalY / count;
-
-                ctx.strokeStyle = '#00f';
-                ctx.lineWidth = 5;
-                // Draw a 60x60 square centered on the blue object
-                ctx.strokeRect(avgX - 30, avgY - 30, 60, 60);
+            if (results.detections.length > 0) {
+                const face = results.detections[0].boundingBox;
                 
-                // Optional: Label
-                ctx.fillStyle = '#00f';
-                ctx.fillText("TRACKING", avgX - 25, avgY - 40);
-            }
+                // Calculate position for a square on the "head" (top of face)
+                const width = face.width * canvasElement.width;
+                const height = face.width * canvasElement.width; // Keep it square
+                const x = face.xCenter * canvasElement.width - (width / 2);
+                const y = face.yCenter * canvasElement.height - (height * 0.8); // Offset upward to head
 
-            requestAnimationFrame(trackBlue);
+                // Draw the blue square
+                canvasCtx.strokeStyle = '#00bcff';
+                canvasCtx.lineWidth = 4;
+                canvasCtx.strokeRect(x, y, width, height);
+                
+                // Add a glow effect
+                canvasCtx.shadowBlur = 15;
+                canvasCtx.shadowColor = '#00bcff';
+                canvasCtx.strokeRect(x, y, width, height);
+            }
+            canvasCtx.restore();
         }
 
-        startCamera();
+        const faceDetection = new FaceDetection({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
+        });
+
+        faceDetection.setOptions({
+            model: 'short',
+            minDetectionConfidence: 0.5
+        });
+
+        faceDetection.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await faceDetection.send({image: videoElement});
+            },
+            width: 1280,
+            height: 720
+        });
+        camera.start();
     </script>
 </body>
 </html>
