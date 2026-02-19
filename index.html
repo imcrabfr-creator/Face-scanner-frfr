@@ -1,57 +1,90 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Face Detection using TensorFlow.js</title>
-    <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/face-api.js"></script>
+    <title>Blue Square Tracker</title>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; background: #222; color: white; }
+        video { display: none; } /* Hide the raw video feed */
+        canvas { border: 4px solid #444; border-radius: 8px; max-width: 100%; }
+        .controls { margin: 20px; }
+    </style>
 </head>
 <body>
-    <video id="video" width="720" height="560" autoplay muted></video>
+
+    <h2>Blue Object Tracker</h2>
+    <p>Hold something blue up to the camera!</p>
+
+    <video id="video" autoplay playsinline></video>
     <canvas id="canvas"></canvas>
 
     <script>
         const video = document.getElementById('video');
         const canvas = document.getElementById('canvas');
-        const displaySize = { width: video.width, height: video.height };
-        canvas.width = displaySize.width;
-        canvas.height = displaySize.height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-        async function setupCamera() {
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: {}
-            });
-            video.srcObject = stream;
-
-            return new Promise((resolve) => {
+        // 1. Request Camera Access
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = stream;
                 video.onloadedmetadata = () => {
-                    resolve(video);
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    trackBlue();
                 };
-            });
+            } catch (err) {
+                console.error("Error accessing camera: ", err);
+                alert("Camera access denied or not available.");
+            }
         }
 
-        async function loadModels() {
-            await faceapi.nets.tinyFaceDetector.loadFromUri('/models');
-            await faceapi.nets.faceLandmark68Net.loadFromUri('/models');
-            await faceapi.nets.faceRecognitionNet.loadFromUri('/models');
+        function trackBlue() {
+            // Draw current video frame to canvas
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            // Get image data to analyze pixels
+            const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const length = frame.data.length;
+
+            let totalX = 0, totalY = 0, count = 0;
+
+            // 2. Simple Color Detection Loop
+            for (let i = 0; i < length; i += 4) {
+                const r = frame.data[i];
+                const g = frame.data[i + 1];
+                const b = frame.data[i + 2];
+
+                // Check if the pixel is "mostly blue"
+                // Logic: Blue value is high, and significantly higher than Red/Green
+                if (b > 100 && b > r * 1.5 && b > g * 1.5) {
+                    const x = (i / 4) % canvas.width;
+                    const y = Math.floor((i / 4) / canvas.width);
+
+                    totalX += x;
+                    totalY += y;
+                    count++;
+                }
+            }
+
+            // 3. Draw the Square if blue is found
+            if (count > 50) { // Require a minimum number of blue pixels to avoid "noise"
+                const avgX = totalX / count;
+                const avgY = totalY / count;
+
+                ctx.strokeStyle = '#00f';
+                ctx.lineWidth = 5;
+                // Draw a 60x60 square centered on the blue object
+                ctx.strokeRect(avgX - 30, avgY - 30, 60, 60);
+                
+                // Optional: Label
+                ctx.fillStyle = '#00f';
+                ctx.fillText("TRACKING", avgX - 25, avgY - 40);
+            }
+
+            requestAnimationFrame(trackBlue);
         }
 
-        async function detectFaces() {
-            const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks();
-            canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
-            faceapi.draw.drawDetections(canvas, detections);
-        }
-
-        (async () => {
-            await setupCamera();
-            video.play();
-            await loadModels();
-
-            setInterval(() => {
-                detectFaces();
-            }, 100);
-        })();
+        startCamera();
     </script>
 </body>
 </html>
