@@ -1,82 +1,88 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>AI Face Tracker</title>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@microsoft/edge-selenium-tools/dist/index.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils"></script>
-    
+    <title>Multi-Face Age Tracker</title>
+    <script defer src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"></script>
     <style>
-        body { margin: 0; background: #111; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; }
-        #output_canvas { border-radius: 10px; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
-        .loading-msg { color: white; position: absolute; font-family: sans-serif; }
+        body { margin: 0; background: #111; display: flex; flex-direction: column; align-items: center; color: white; font-family: 'Segoe UI', sans-serif; }
+        #canvas-container { position: relative; margin-top: 20px; }
+        video, canvas { position: absolute; top: 0; left: 0; border-radius: 10px; }
+        .loading { margin-top: 200px; font-size: 20px; color: #00bcff; }
     </style>
 </head>
 <body>
 
-    <div class="loading-msg">Loading AI Model...</div>
-    <video id="input_video" style="display:none"></video>
-    <canvas id="output_canvas"></canvas>
+    <div id="loading" class="loading">Initializing AI Models (Age & Face)...</div>
+    
+    <div id="canvas-container">
+        <video id="video" width="640" height="480" autoplay muted playsinline></video>
+        <canvas id="overlay"></canvas>
+    </div>
 
-    <script type="module">
-        const videoElement = document.getElementById('input_video');
-        const canvasElement = document.getElementById('output_canvas');
-        const canvasCtx = canvasElement.getContext('2d');
-        const loadingMsg = document.querySelector('.loading-msg');
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('overlay');
+        const loadingLabel = document.getElementById('loading');
 
-        function onResults(results) {
-            loadingMsg.style.display = 'none';
+        // This helps stop the age from flickering
+        const ageHistory = {}; 
+
+        async function setup() {
+            // 1. Load the models from a public CDN
+            const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
             
-            // Set canvas size to match video
-            canvasElement.width = videoElement.videoWidth;
-            canvasElement.height = videoElement.videoHeight;
+            await Promise.all([
+                faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+                faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+                faceapi.nets.ageGenderNet.loadFromUri(MODEL_URL)
+            ]);
 
-            // Draw the video frame
-            canvasCtx.save();
-            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
-
-            if (results.detections.length > 0) {
-                const face = results.detections[0].boundingBox;
-                
-                // Calculate position for a square on the "head" (top of face)
-                const width = face.width * canvasElement.width;
-                const height = face.width * canvasElement.width; // Keep it square
-                const x = face.xCenter * canvasElement.width - (width / 2);
-                const y = face.yCenter * canvasElement.height - (height * 0.8); // Offset upward to head
-
-                // Draw the blue square
-                canvasCtx.strokeStyle = '#00bcff';
-                canvasCtx.lineWidth = 4;
-                canvasCtx.strokeRect(x, y, width, height);
-                
-                // Add a glow effect
-                canvasCtx.shadowBlur = 15;
-                canvasCtx.shadowColor = '#00bcff';
-                canvasCtx.strokeRect(x, y, width, height);
-            }
-            canvasCtx.restore();
+            // 2. Start Video
+            navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } })
+                .then(stream => {
+                    video.srcObject = stream;
+                    loadingLabel.style.display = 'none';
+                });
         }
 
-        const faceDetection = new FaceDetection({
-            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
+        video.addEventListener('play', () => {
+            const displaySize = { width: video.width, height: video.height };
+            faceapi.matchDimensions(canvas, displaySize);
+
+            setInterval(async () => {
+                // 3. Detect ALL faces + Age
+                const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions())
+                    .withFaceLandmarks()
+                    .withAgeAndGender();
+
+                const resizedDetections = faceapi.resizeResults(detections, displaySize);
+                
+                // Clear and draw
+                const ctx = canvas.getContext('2d');
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                resizedDetections.forEach((detection, i) => {
+                    const { age, box } = detection;
+                    
+                    // 4. Smooth the age (Average of last 10 frames)
+                    if (!ageHistory[i]) ageHistory[i] = [];
+                    ageHistory[i].push(age);
+                    if (ageHistory[i].length > 15) ageHistory[i].shift();
+                    const smoothAge = Math.round(ageHistory[i].reduce((a, b) => a + b) / ageHistory[i].length);
+
+                    // 5. Custom Drawing (Blue Square + Age)
+                    ctx.strokeStyle = '#00bcff';
+                    ctx.lineWidth = 4;
+                    ctx.strokeRect(box.x, box.y - 50, box.width, box.width); // Square on head area
+
+                    ctx.fillStyle = '#00bcff';
+                    ctx.font = 'bold 18px Arial';
+                    ctx.fillText(`Age: ~${smoothAge}`, box.x, box.y - 60);
+                });
+            }, 100); // Runs 10 times per second for smoothness
         });
 
-        faceDetection.setOptions({
-            model: 'short',
-            minDetectionConfidence: 0.5
-        });
-
-        faceDetection.onResults(onResults);
-
-        const camera = new Camera(videoElement, {
-            onFrame: async () => {
-                await faceDetection.send({image: videoElement});
-            },
-            width: 1280,
-            height: 720
-        });
-        camera.start();
+        setup();
     </script>
 </body>
 </html>
